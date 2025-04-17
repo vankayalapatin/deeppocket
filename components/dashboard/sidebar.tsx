@@ -206,10 +206,10 @@ export function Sidebar({ className }: React.HTMLAttributes<HTMLDivElement>) {
           />
           <div className="mt-auto flex flex-col gap-4 border-t p-4">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center">
                 {!isCollapsed && (
                   <div className="flex items-center">
-                    <UserCircle className="h-5 w-5 text-gray-500 dark:text-gray-400 mr-2" />
+                    <UserCircle className="h-5 w-5 text-gray-500 dark:text-gray-400 mr-4" />
                     <div className="grid gap-1">
                       <p className="text-sm font-medium">{getDisplayName()}</p>
                       {userData?.email && (
@@ -323,7 +323,7 @@ function MobileSidebar() {
       
       <div className="mt-auto border-t p-4">
         <div className="flex items-center">
-          <UserCircle className="h-5 w-5 text-gray-500 dark:text-gray-400 mr-2" />
+          <UserCircle className="h-5 w-5 text-gray-500 dark:text-gray-400 mr-4" />
           <div>
             <p className="text-sm font-medium">{getDisplayName()}</p>
             {userData?.email && (

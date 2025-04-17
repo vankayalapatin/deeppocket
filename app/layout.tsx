@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "DeepPocket",
-  description: "Deep Pocket",
+  description: "Your personal finance dashboard",
 };
 
 export default function RootLayout({
