@@ -6,6 +6,7 @@ import { ModeToggle } from '@/components/ui/mode-toggle'
 import { Button } from '@/components/ui/button'
 import { ThemeProvider } from 'next-themes'
 import { AddAccountButton } from '@/components/dashboard/add-account-button'
+import { Toaster } from '@/components/ui/toaster'
 
 export default async function DashboardLayout({
   children,
@@ -56,6 +57,7 @@ export default async function DashboardLayout({
           </div>
         </div>
       </div>
+      <Toaster />
     </ThemeProvider>
   )
 }
