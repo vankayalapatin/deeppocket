@@ -5,7 +5,7 @@ import { Sidebar } from '@/components/dashboard/sidebar'
 import { ModeToggle } from '@/components/ui/mode-toggle'
 import { Button } from '@/components/ui/button'
 import { ThemeProvider } from 'next-themes'
-import { PlusCircle } from 'lucide-react'
+import { AddAccountButton } from '@/components/dashboard/add-account-button'
 
 export default async function DashboardLayout({
   children,
@@ -50,10 +50,7 @@ export default async function DashboardLayout({
           
           <div className="relative flex-1 overflow-auto">
             <div className="absolute top-6 right-8 z-10">
-              <Button>
-                <PlusCircle className="mr-2 h-4 w-4" />
-                Add Account
-              </Button>
+              <AddAccountButton />
             </div>
             {children}
           </div>
