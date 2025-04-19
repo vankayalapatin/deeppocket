@@ -1,23 +1,11 @@
 // app/api/plaid/accounts/route.ts
-import { NextResponse, NextRequest } from 'next/server'; // Import NextRequest
+import { NextResponse, NextRequest } from 'next/server';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
-import { plaidClient } from '@/lib/plaid';
-import { decrypt } from '@/lib/encryption';
-import { AccountBase, Institution, CountryCode } from 'plaid';
+import { AccountBase, Institution } from 'plaid'; // Use Plaid types for shaping output
 
 export const dynamic = 'force-dynamic';
 
-const getEnvVar = (varName: string, defaultValue?: string): string => { /* ... same as above ... */
-    const value = process.env[varName];
-    if (!value && defaultValue === undefined) {
-        throw new Error(`${varName} environment variable is not set.`);
-    }
-    return value || defaultValue!;
-};
-
-
-// GET function now accepts request object to read query params
 export async function GET(request: NextRequest) {
     const cookieStore = cookies();
     const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
@@ -26,6 +14,7 @@ export async function GET(request: NextRequest) {
         // 1. Authenticate User
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         if (sessionError || !session?.user) {
+            console.error("API [/api/plaid/accounts] Auth Error:", sessionError?.message || "No session");
             return NextResponse.json({ message: 'Not authenticated' }, { status: 401 });
         }
         const userId = session.user.id;
@@ -33,67 +22,66 @@ export async function GET(request: NextRequest) {
         // 2. Get item_id from Query Parameter
         const itemId = request.nextUrl.searchParams.get('itemId');
         if (!itemId) {
+            console.warn("API [/api/plaid/accounts] Missing itemId query parameter");
             return NextResponse.json({ message: 'Missing required query parameter: itemId' }, { status: 400 });
         }
+        console.log(`API [/api/plaid/accounts] User: ${userId}, Item: ${itemId}`);
 
-        // 3. Retrieve Token and Institution ID for the SPECIFIC item_id and user_id
-        // Make sure item_id column exists and is selected
-        const { data: itemData, error: dbError } = await supabase
+        // 3. Fetch the Institution details associated with this itemId (from plaid_items)
+        const { data: itemInfo, error: itemInfoError } = await supabase
             .from('plaid_items')
-            .select('access_token, institution_id') // Use correct field name 'access_token'
+            .select('institution_id, institution_name, institution_logo_base64') // Select logo
             .eq('user_id', userId)
-            .eq('item_id', itemId) // Filter by specific item ID
-            .single(); // Expect exactly one item for this user/item combo
+            .eq('item_id', itemId)
+            .single();
 
-        if (dbError || !itemData) {
-            console.error(`API [/api/plaid/accounts] DB Error or item not found for user ${userId}, item ${itemId}:`, dbError);
-            const status = dbError?.code === 'PGRST116' ? 404 : 500; // PGRST116: 'No rows found'
-            return NextResponse.json({ message: status === 404 ? 'Item not found for this user.' : 'Database error.' }, { status });
-        }
-         if (!itemData.access_token || !itemData.institution_id) {
-             console.error(`API [/api/plaid/accounts] Incomplete data for user ${userId}, item ${itemId}.`);
-             return NextResponse.json({ message: 'Incomplete item data in database.' }, { status: 500 });
-         }
-        const institutionId = itemData.institution_id;
-
-        // 4. Decrypt Access Token
-        const accessToken = decrypt(itemData.access_token);
-        if (!accessToken) {
-             console.error(`API [/api/plaid/accounts] Decryption Failed for user ${userId}, item ${itemId}.`);
-            return NextResponse.json({ message: 'Failed to process credentials.' }, { status: 500 });
+        if (itemInfoError || !itemInfo) {
+             console.error(`API [/api/plaid/accounts] Item info not found for user ${userId}, item ${itemId}:`, itemInfoError);
+             const status = itemInfoError?.code === 'PGRST116' ? 404 : 500;
+             return NextResponse.json({ message: 'Item info not found.' }, { status });
         }
 
-        // 5. Fetch Accounts & Institution (parallel)
-        // ... (Fetch logic using accessToken and institutionId remains the same as previous version) ...
-         let accounts: AccountBase[] = [];
-         let institution: Institution | null = null;
-         const accountsPromise = plaidClient.accountsGet({ access_token: accessToken });
-         const countryCodes = getEnvVar('PLAID_COUNTRY_CODES', 'US').split(',') as CountryCode[];
-         const institutionPromise = plaidClient.institutionsGetById({
-              institution_id: institutionId,
-              country_codes: countryCodes,
-              options: { include_optional_metadata: true }
-          });
+        // 4. Fetch Accounts from DB table 'plaid_accounts'
+        const { data: dbAccounts, error: dbError } = await supabase
+            .from('plaid_accounts')
+            .select('*') // Select all needed columns
+            .eq('user_id', userId)
+            .eq('item_id', itemId); // Filter by item_id
 
-         try {
-             console.log(`API [/api/plaid/accounts] Fetching accounts/institution for user ${userId}, item ${itemId}...`);
-             const [accountsResponse, institutionResponse] = await Promise.all([
-                 accountsPromise,
-                 institutionPromise
-             ]);
-             accounts = accountsResponse.data.accounts;
-             institution = institutionResponse.data.institution;
-             console.log(`API [/api/plaid/accounts] Fetched ${accounts.length} accounts for item ${itemId}.`);
-         } catch (plaidError: any) {
-             // ... (Error handling for Promise.all remains the same) ...
-             console.error(`API [/api/plaid/accounts] Plaid Error (Accounts/Institution) for user ${userId}, item ${itemId}:`, plaidError.response?.data || plaidError.message);
-             const status = plaidError.response?.status || 500;
-             const message = `Failed to fetch data for item ${itemId}: ${plaidError.response?.data?.error_message || plaidError.message}`;
-             return NextResponse.json({ message }, { status });
-         }
+        if (dbError) {
+            console.error(`API [/api/plaid/accounts] DB Error fetching accounts for user ${userId}, item ${itemId}:`, dbError);
+            return NextResponse.json({ message: 'Database error fetching accounts.' }, { status: 500 });
+        }
 
+        // 5. Format DB account data to match Plaid's AccountBase structure
+        const accounts: AccountBase[] = dbAccounts?.map((acc: any) => ({
+             account_id: acc.account_id,
+             balances: {
+                 current: acc.current_balance ?? null,
+                 available: acc.available_balance ?? null,
+                 limit: acc.limit ?? null,
+                 iso_currency_code: acc.currency ?? null,
+                 unofficial_currency_code: null,
+             },
+             mask: acc.mask ?? null,
+             name: acc.name ?? '',
+             official_name: acc.official_name ?? null,
+             subtype: acc.subtype ?? null,
+             type: acc.type as any ?? null,
+             verification_status: undefined,
+             persistent_account_id: undefined,
+         })) || [];
 
-        // 6. Return Data for the specific item
+         // Construct the institution object including logo
+         // Use Partial<Institution> because we don't have all fields from Plaid
+         const institution: Partial<Institution> = {
+             institution_id: itemInfo.institution_id, // Use ID from DB
+             name: itemInfo.institution_name,         // Use name from DB
+             logo: itemInfo.institution_logo_base64,  // Use logo from DB
+             // Other fields like url, primary_color are not available here
+         };
+
+        console.log(`API [/api/plaid/accounts] Returning ${accounts.length} accounts from DB for item ${itemId}.`);
         return NextResponse.json({ accounts, institution });
 
     } catch (error: any) {

@@ -1,144 +1,160 @@
-// components/dashboard/add-account-button.tsx
-'use client'
+// components/dashboard/AddAccountButton.tsx
+'use client';
 
-import { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { usePlaidLink, PlaidLinkOnSuccessMetadata, PlaidLinkError } from 'react-plaid-link';
 import { Button } from '@/components/ui/button';
-import { PlusCircle } from 'lucide-react';
-import { PlaidLinkModal } from './plaid-link-modal'; // Assuming PlaidLinkModal passes both args to onSuccess
-import { useToast } from "@/components/ui/use-toast";
-import type { PlaidLinkOnSuccessMetadata } from 'react-plaid-link'; // Import the type
+import { useToast } from '@/components/ui/use-toast';
 
 export function AddAccountButton() {
-  const [isLoading, setIsLoading] = useState(false);
-  const [linkToken, setLinkToken] = useState<string | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const { toast } = useToast();
+    const [linkToken, setLinkToken] = useState<string | null>(null);
+    const [isFetchingToken, setIsFetchingToken] = useState(false);
+    const [isExchangingToken, setIsExchangingToken] = useState(false);
+    const router = useRouter();
+    const { toast } = useToast();
+    const [error, setError] = useState<string | null>(null); // Local error state
 
-  const handleAddAccount = async () => {
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/plaid/create-link-token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
+    const fetchLinkToken = useCallback(async () => {
+        console.log("Attempting to fetch link token..."); // Log start
+        setIsFetchingToken(true);
+        setError(null);
+        try {
+            const response = await fetch('/api/plaid/create-link-token', { method: 'POST' });
+            const responseBodyText = await response.text(); // Read body once
+            console.log("fetchLinkToken response status:", response.status);
+            console.log("fetchLinkToken response body:", responseBodyText);
 
-      const data = await response.json();
+            let data;
+            try {
+                 data = JSON.parse(responseBodyText); // Parse
+            } catch(parseError) {
+                 console.error("Failed to parse link token response:", parseError);
+                 throw new Error(`Invalid response received from server (Status: ${response.status})`);
+            }
 
-      if (response.ok) {
-        console.log('Plaid Link Token:', data.linkToken);
-        setLinkToken(data.linkToken);
-        setIsModalOpen(true); // Open modal when token is ready
-      } else {
-        console.error('Error creating link token:', data.error);
-        toast({
-          title: "Error",
-          description: data.error || "Failed to initialize connection",
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error('Failed to fetch link token:', error);
-      toast({
-        title: "Error",
-        description: "An unexpected error occurred while preparing connection",
-        variant: "destructive"
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
+            if (!response.ok) {
+                 throw new Error(data.message || data.error || 'Failed to fetch link token');
+            }
+            // *** This check should now pass ***
+            if (!data.link_token) {
+                 console.error("Parsed data missing link_token:", data);
+                 throw new Error('Received invalid link token data');
+            }
+            setLinkToken(data.link_token); // Set the correct snake_case token
+            console.log("Link token fetched successfully");
+        } catch (error: any) {
+            console.error("Error fetching link token:", error);
+            setError(`Failed to initialize account linking: ${error.message}`);
+             toast({
+                 title: "Initialization Error",
+                 description: `Could not initialize account linking: ${error.message}`,
+                 variant: "destructive",
+             });
+            setLinkToken(null);
+        } finally {
+            setIsFetchingToken(false);
+        }
+    }, [toast]);
 
-  // --- MODIFIED: Accept metadata ---
-  const handlePlaidSuccess = async (publicToken: string, metadata: PlaidLinkOnSuccessMetadata) => {
-    console.log('Public token received:', publicToken);
-    console.log('Plaid metadata:', metadata); // Log metadata for debugging
 
-    // --- ADDED: Extract institution details ---
-    const institutionId = metadata.institution?.institution_id;
-    const institutionName = metadata.institution?.name;
+    const onSuccess = useCallback(async (publicToken: string, metadata: PlaidLinkOnSuccessMetadata) => {
+        // ... (onSuccess logic remains the same as previous correct version) ...
+        console.log("Plaid Link Success - Public Token:", publicToken);
+        console.log("Plaid Link Success - Metadata:", metadata);
+        if (!metadata.institution?.institution_id) {
+             console.error("Plaid metadata missing institution details.");
+             toast({ title: "Link Error", description: "Missing institution details.", variant: "destructive" });
+             return;
+        }
+        setIsExchangingToken(true);
+        setError(null);
+        try {
+            console.log("Sending public token and institution to backend...");
+            const response = await fetch('/api/plaid/exchange-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    public_token: publicToken,
+                    institution: metadata.institution
+                }),
+            });
+            const responseText = await response.text();
+            console.log("Exchange Backend response status:", response.status);
+            console.log("Exchange Backend response body:", responseText);
+            let data;
+            try { data = JSON.parse(responseText); }
+            catch (parseError) { throw new Error(`Invalid response from exchange server (Status: ${response.status})`); }
+            if (!response.ok) { throw new Error(data.message || `Token exchange failed with status: ${response.status}`); }
+            console.log("Token exchange and initial sync successful:", data);
+            toast({ title: "Account Linked!", description: `${metadata.institution.name} connected.` });
+            router.refresh();
+        } catch (error: any) {
+            console.error("Token exchange fetch/processing error:", error);
+             toast({ title: "Linking Error", description: `Could not link account: ${error.message}`, variant: "destructive" });
+             setError(`Linking failed: ${error.message}`);
+        } finally {
+             setIsExchangingToken(false);
+        }
+    }, [router, toast]);
 
-    if (!institutionId || !institutionName) {
-       console.error("Could not extract institution details from Plaid metadata.");
-       toast({
-         title: "Connection Error",
-         description: "Could not get institution details. Please try again.",
-         variant: "destructive"
-       });
-       setIsModalOpen(false); // Close modal on error
-       return;
-    }
-    // --- END ADDED ---
 
-    setIsModalOpen(false); // Close the modal immediately on success start
-    setIsLoading(true); // Show loading state on the button while exchanging token
+    const onError = useCallback((error: PlaidLinkError) => {
+        // ... (onError logic remains the same) ...
+        console.error('Plaid Link Error:', error);
+        toast({ title: "Plaid Link Error", description: error.display_message || error.error_message || `Code: ${error.error_code}`, variant: "destructive" });
+    }, [toast]);
 
-    try {
-      // Exchange public token for access token
-      const response = await fetch('/api/plaid/exchange-token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        // --- MODIFIED: Send institution details ---
-        body: JSON.stringify({
-          public_token: publicToken,
-          institution_id: institutionId,
-          institution_name: institutionName,
-        }),
-      });
+    const onExit = useCallback((error: PlaidLinkError | null, metadata: PlaidLinkOnSuccessMetadata) => {
+       // ... (onExit logic remains the same) ...
+        console.log('Plaid Link Exit. Error:', error, 'Metadata:', metadata);
+    }, []);
 
-      const data = await response.json();
+    const { open, ready, error: plaidLinkError } = usePlaidLink({
+        token: linkToken,
+        onSuccess,
+        onError,
+        onExit,
+    });
 
-      if (response.ok) {
-        console.log('Access token received and stored for institution:', data.institution); // Use institution name from response
-        toast({
-          title: "Success!",
-          description: `${data.institution || 'Your account'} was successfully connected.`, // Use institution name from response
-        });
-        // TODO: Trigger data refresh if needed (e.g., re-fetch accounts list)
-      } else {
-        console.error('Token exchange error:', data.error);
-        toast({
-          title: "Connection Error",
-          description: data.error || "Failed to finalize account connection",
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error('Failed to exchange token:', error);
-      toast({
-        title: "Connection Error",
-        description: "Failed to complete account setup. Please check your network.",
-        variant: "destructive"
-      });
-    } finally {
-       setIsLoading(false); // Stop loading state on button
-    }
-  };
+    useEffect(() => {
+        if (!linkToken && !isFetchingToken) { // Fetch only if token is null AND not already fetching
+            fetchLinkToken();
+        }
+    }, [linkToken, isFetchingToken, fetchLinkToken]);
 
-  const handlePlaidExit = () => {
-    console.log('Plaid Link exited');
-    setLinkToken(null); // Clear link token
-    setIsModalOpen(false); // Ensure modal is closed
-  };
 
-  return (
-    <>
-      <Button onClick={handleAddAccount} disabled={isLoading}>
-        <PlusCircle className="mr-2 h-4 w-4" />
-        {isLoading ? 'Connecting...' : 'Add Account'}
-      </Button>
+     useEffect(() => {
+         if (plaidLinkError) {
+            // ... (plaidLinkError handling remains the same) ...
+             console.error("Plaid Link Hook Error:", plaidLinkError);
+             setError(`Plaid initialization failed: ${plaidLinkError.message}`);
+             toast({ title: "Initialization Error", description: `Plaid Link failed: ${plaidLinkError.message}`, variant: "destructive" });
+         }
+     }, [plaidLinkError, toast]);
 
-      {/* Ensure PlaidLinkModal calls onSuccess(publicToken, metadata) */}
-      <PlaidLinkModal
-        linkToken={linkToken}
-        onSuccess={handlePlaidSuccess} // Pass the modified handler
-        onExit={handlePlaidExit}
-        isOpen={isModalOpen}
-        setIsOpen={setIsModalOpen}
-      />
-    </>
-  );
+
+    const handleAddAccountClick = () => {
+        // ... (handleAddAccountClick logic remains the same) ...
+        if (ready && linkToken) {
+            open();
+        } else if (!linkToken && !isFetchingToken) {
+            console.log("Link token not ready or null, attempting refetch...");
+            fetchLinkToken();
+             toast({ title: "Initializing...", description: "Please wait..." });
+        }
+    };
+
+
+    return (
+        <>
+            <Button
+                onClick={handleAddAccountClick}
+                disabled={!ready || isFetchingToken || isExchangingToken || !linkToken}
+            >
+                {isFetchingToken ? 'Initializing...' : isExchangingToken ? 'Connecting...' : '+ Add Account'}
+            </Button>
+             {/* {error && <p className="text-red-500 text-sm mt-2">{error}</p>} */}
+        </>
+    );
 }
